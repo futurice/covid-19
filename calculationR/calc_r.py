@@ -2,18 +2,27 @@
 from datetime import datetime as dt
 from datetime import timedelta
 import logging
-from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
+import io
+from azure.storage.blob import BlobServiceClient
 
 import pandas as pd
 import numpy as np
 import requests
 
+from matplotlib import pyplot as plt
+from matplotlib.dates import date2num
+from matplotlib import dates as mdates
+from matplotlib import ticker
+from matplotlib.colors import ListedColormap
+
 from scipy import stats as sps
+from scipy.interpolate import interp1d
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s %(name)s:%(lineno)d - %(message)s")
 logger = logging.getLogger(__name__)
 
 SKIP_N_LAST_DAYS_IN_DATA = 5
+DAYS_USED_IN_POSTERIOR = 7
 
 R_T_MAX = 12
 r_t_range = np.linspace(0, R_T_MAX, R_T_MAX * 100 + 1)
@@ -25,7 +34,8 @@ state_name = 'Finland'  # TODO, it is possible to calculate all Finn states sepa
 
 # Setup Blob Service client
 CONTAINER_NAME = "estimate-rt"
-CONNECTION_STRING = "" # TODO!!! NOTE CONNECTION_STRING!!
+CONNECTION_STRING = ""  # TODO! AZURE CONNECTION STRING
+
 
 def get_data_from_THL():
     url = "https://w3qa5ydb4l.execute-api.eu-west-1.amazonaws.com/prod/processedThlData"
@@ -65,7 +75,8 @@ def prepare_cases(cases):
     return original, smoothed
 
 
-def get_posteriors(sr, window=7, min_periods=1):
+def get_posteriors(sr, min_periods=1):
+    window = DAYS_USED_IN_POSTERIOR
     lam = sr[:-1].values * np.exp(GAMMA * (r_t_range[:, None] - 1))
 
     # Note: if you want to have a Uniform prior you can use the following line instead.
@@ -96,6 +107,74 @@ def get_posteriors(sr, window=7, min_periods=1):
     return posteriors
 
 
+def plot_rt(result, ax, state_name, fig):
+    ax.set_title(f"{state_name}")
+
+    # Colors
+    ABOVE = [1, 0, 0]
+    MIDDLE = [1, 1, 1]
+    BELOW = [0, 0, 0]
+    cmap = ListedColormap(np.r_[
+                              np.linspace(BELOW, MIDDLE, 25),
+                              np.linspace(MIDDLE, ABOVE, 25)
+                          ])
+    color_mapped = lambda y: np.clip(y, .5, 1.5) - .5
+
+    index = result['ML'].index.get_level_values('date')
+    values = result['ML'].values
+
+    # Plot dots and line
+    ax.plot(index, values, c='k', zorder=1, alpha=.25)
+    ax.scatter(index,
+               values,
+               s=40,
+               lw=.5,
+               c=cmap(color_mapped(values)),
+               edgecolors='k', zorder=2)
+
+    # Aesthetically, extrapolate credible interval by 1 day either side
+    lowfn = interp1d(date2num(index),
+                     result['Low'].values,
+                     bounds_error=False,
+                     fill_value='extrapolate')
+
+    highfn = interp1d(date2num(index),
+                      result['High'].values,
+                      bounds_error=False,
+                      fill_value='extrapolate')
+
+    extended = pd.date_range(start=pd.Timestamp('2020-03-01'),
+                             end=index[-1] + pd.Timedelta(days=1))
+
+    ax.fill_between(extended,
+                    lowfn(date2num(extended)),
+                    highfn(date2num(extended)),
+                    color='k',
+                    alpha=.1,
+                    lw=0,
+                    zorder=3)
+
+    ax.axhline(1.0, c='k', lw=1, label='$R_t=1.0$', alpha=.25);
+
+    # Formatting
+    ax.xaxis.set_major_locator(mdates.MonthLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b'))
+    ax.xaxis.set_minor_locator(mdates.DayLocator())
+
+    ax.yaxis.set_major_locator(ticker.MultipleLocator(1))
+    ax.yaxis.set_major_formatter(ticker.StrMethodFormatter("{x:.1f}"))
+    ax.yaxis.tick_right()
+    ax.spines['left'].set_visible(False)
+    ax.spines['bottom'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.margins(0)
+    ax.grid(which='major', axis='y', c='k', alpha=.1, zorder=-2)
+    ax.margins(0)
+    ax.set_ylim(0.0, 3.5)
+    ax.set_xlim(pd.Timestamp('2020-03-01'), result.index.get_level_values('date')[-1] + pd.Timedelta(days=1))
+    fig.set_facecolor('w')
+
+
 def highest_density_interval(pmf, p=.95):
     # If we pass a DataFrame, just call this recursively on the columns
     if (isinstance(pmf, pd.DataFrame)):
@@ -115,9 +194,19 @@ def highest_density_interval(pmf, p=.95):
     return pd.Series([low, high], index=['Low', 'High'])
 
 
-def main() -> None:
+def _write_to_cloud(client, data, destination):
+    blob_client = client.get_blob_client(container=CONTAINER_NAME, blob=destination)
+    blob_client.upload_blob(data)
+
+
+def main(faux_param=None) -> None:
     logger.info('START')
     fname_date = str(dt.today()).replace(' ', '_')
+
+    cases_filename = f'{fname_date}_cases.csv'
+    cases_image_name = f'{fname_date}_cases.png'
+    result_filename = f'{fname_date}_Rt.csv'
+    result_image_name = f'{fname_date}_Rt.png'
 
     finland = get_data_from_THL()
     cases = finland['value'].rename(f"{state_name} cases")
@@ -128,12 +217,32 @@ def main() -> None:
     blob_service_client = BlobServiceClient.from_connection_string(CONNECTION_STRING)
     container_client = blob_service_client.get_container_client(CONTAINER_NAME)
 
-    cases_filename = f'{fname_date}_cases.csv'
-    logger.info(f'Upload to Azure cases_filename')
+    logger.info(f'Upload to Azure cases')
 
-    blob_client = blob_service_client.get_blob_client(container=CONTAINER_NAME, blob=cases_filename)
-    blob_client.upload_blob(pd.concat([original_cases.rename('Original Cases'),
-                                       smoothed_cases.rename('Smoothed Cases')], axis=1).to_csv(index_label='date'))
+    _write_to_cloud(blob_service_client, pd.concat([original_cases.rename('Original Cases'),
+                                                    smoothed_cases.rename('Smoothed Cases')], axis=1).to_csv(
+        index_label='date'),
+                    cases_filename)
+
+    original_cases.plot(title=f"{state_name} New Cases per Day",
+                        c='k',
+                        linestyle=':',
+                        alpha=.5,
+                        label='Actual',
+                        legend=True,
+                        figsize=(600 / 72, 400 / 72))
+
+    ax = smoothed_cases.plot(label='Smoothed',
+                             legend=True)
+    ax.get_figure().set_facecolor('w')
+
+    img_data = io.BytesIO()
+    plt.savefig(img_data, format='png')
+    img_data.seek(0)
+
+    _write_to_cloud(blob_service_client, img_data, cases_image_name)
+
+    # Calculate R_t
 
     logger.info('Calculate R_t')
     posteriors = get_posteriors(smoothed_cases)
@@ -141,12 +250,26 @@ def main() -> None:
 
     most_likely = posteriors.idxmax().rename('ML')
 
-    result = pd.concat([most_likely, hdis], axis=1).reset_index()
+    result = pd.concat([most_likely, hdis], axis=1)
 
-    result_filename = f'{fname_date}_Rt.csv'
+    # Write results to blob storage
+
     logger.info(f'Write file to {result_filename} in blob storage')
 
-    blob_client = blob_service_client.get_blob_client(container=CONTAINER_NAME, blob=result_filename)
-    blob_client.upload_blob(result.to_csv(index=False))
+    _write_to_cloud(blob_service_client, result.reset_index().to_csv(index=False), result_filename)
+
+    fig, ax = plt.subplots(figsize=(600 / 72, 400 / 72))
+
+    plot_rt(result, ax, state_name, fig)
+    ax.set_title(f'Real-time $R_t$ for {state_name}')
+    ax.set_ylim(.5, 3.5)
+    ax.xaxis.set_major_locator(mdates.WeekdayLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %d'))
+
+    img_data = io.BytesIO()
+    plt.savefig(img_data, format='png')
+    img_data.seek(0)
+
+    _write_to_cloud(blob_service_client, img_data, result_image_name)
 
     logger.info('DONE')
