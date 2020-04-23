@@ -1,0 +1,6 @@
+matplotlib
+pandas 
+numpy
+scipy
+requests
+azure-storage-blob

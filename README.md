@@ -7,6 +7,8 @@ The other part of his project `calculationR` contains the same code as a Azure F
 To use this part of the code, you need to define the relevant azure blob storaga parameters 
  `CONTAINER_NAME"` and `CONNECTION_STRING` in `calculationR/calc_r.py` 
  
+ `requirements.txt` contains the python requirements for both projects
+ 
 The original notebook and explanation of the calculation is in the notebook `Realtime R0.ipynb` is by Kevin Systrom and is further explained in the following blog post
  
  
