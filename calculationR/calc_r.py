@@ -1,4 +1,4 @@
-# Original R_t code https://wwwnc.cdc.gov/eid/article/26/6/20-0357_article
+# Original R_t code http://systrom.com/blog/the-metric-we-need-to-manage-covid-19/
 from datetime import datetime as dt
 from datetime import timedelta
 import logging
