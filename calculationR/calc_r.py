@@ -4,6 +4,7 @@ from datetime import timedelta
 import logging
 import io
 from azure.storage.blob import BlobServiceClient
+import azure.functions as func
 
 import pandas as pd
 import numpy as np
@@ -199,7 +200,7 @@ def _write_to_cloud(client, data, destination):
     blob_client.upload_blob(data)
 
 
-def main(faux_param=None) -> None:
+def main(mytimer: func.TimerRequest) -> None:
     logger.info('START')
     fname_date = str(dt.today()).replace(' ', '_')
 
