@@ -197,17 +197,16 @@ def highest_density_interval(pmf, p=.95):
 
 def _write_to_cloud(client, data, destination):
     blob_client = client.get_blob_client(container=CONTAINER_NAME, blob=destination)
-    blob_client.upload_blob(data)
+    blob_client.upload_blob(data, overwrite=True)
 
 
 def main(mytimer: func.TimerRequest) -> None:
     logger.info('START')
-    fname_date = str(dt.today()).replace(' ', '_')
 
-    cases_filename = f'{fname_date}_cases.csv'
-    cases_image_name = f'{fname_date}_cases.png'
-    result_filename = f'{fname_date}_Rt.csv'
-    result_image_name = f'{fname_date}_Rt.png'
+    cases_filename = f'latest_cases.csv'
+    cases_image_name = f'latest_cases.png'
+    result_filename = f'latest_Rt.csv'
+    result_image_name = f'latest_Rt.png'
 
     finland = get_data_from_THL()
     cases = finland['value'].rename(f"{state_name} cases")
